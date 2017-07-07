@@ -48,9 +48,9 @@ log = logging.getLogger(__name__)
 
 # One-hot encoding of our TS types
 TS_CLASSES = {
-    'ct': [0, 0, 0],
-    'htg': [0, 0, 1],
-    'clg': [0, 1, 0],
+#    'ct': [0, 0, 0],
+    'htg': [0, 0],
+    'clg': [0, 1],
 }
 
 
@@ -103,8 +103,8 @@ def prepare_data():
     oat_col = df_oat.columns[0]
     oat_df = df_oat[oat_col]
     input_outputs = []
-    input_outputs.extend(get_inputs_and_outputs_for_ts(df_ct, oat_df, 'ct'))
-#    input_outputs.extend(get_inputs_and_outputs_for_ts(df_htg, oat_df, 'htg'))
+#    input_outputs.extend(get_inputs_and_outputs_for_ts(df_ct, oat_df, 'ct'))
+    input_outputs.extend(get_inputs_and_outputs_for_ts(df_htg, oat_df, 'htg'))
     input_outputs.extend(get_inputs_and_outputs_for_ts(df_clg, oat_df, 'clg'))
 
     shuffle(input_outputs)
@@ -121,36 +121,58 @@ def get_model(sequence_length, hidden_layers):
     LSTMCell...
 
     """
-    data = tf.placeholder(tf.float32, [None, sequence_length, 3])
-    target = tf.placeholder(tf.float32, [None, 3])
+    with tf.name_scope('input'):
+        # 3 dimensions - epoch, OAT and actual value to classify
+        data = tf.placeholder(tf.float32, [None, sequence_length, 3])
+        # 2 classes - heating and cooling
+        target = tf.placeholder(tf.float32, [None, 2])
 
     cell = tf.contrib.rnn.LSTMCell(hidden_layers, state_is_tuple=True)
     val, state = tf.nn.dynamic_rnn(cell, data, dtype=tf.float32)
+
+    # this is the bit I don't really get - why are we switching batch and
+    # sequence size? We just take the last value... which is presumably the
+    # class it has finally derived?
     val = tf.transpose(val, [1, 0, 2])
     last = tf.gather(val, int(val.get_shape()[0]) - 1)
 
-    weight = tf.Variable(tf.truncated_normal([
-        hidden_layers, int(target.get_shape()[1])
-    ]))
-    bias = tf.Variable(tf.constant(0.1, shape=[target.get_shape()[1]]))
+    with tf.name_scope("weight"):
+        weight = tf.Variable(tf.truncated_normal([
+            hidden_layers, int(target.get_shape()[1])
+        ]))
 
-    prediction = tf.nn.softmax(tf.matmul(last, weight) + bias)
+    with tf.name_scope("bias"):
+        bias = tf.Variable(tf.constant(0.1, shape=[target.get_shape()[1]]))
 
-    cross_entropy = -tf.reduce_sum(
-        target * tf.log(tf.clip_by_value(prediction, 1e-10, 1.0))
-    )
+    with tf.name_scope("prediction"):
+        prediction = tf.nn.softmax(tf.matmul(last, weight) + bias)
 
-    optimizer = tf.train.AdamOptimizer()
-    minimize = optimizer.minimize(cross_entropy)
+    with tf.name_scope('cross_entropy'):
+        cross_entropy = -tf.reduce_sum(
+            target * tf.log(tf.clip_by_value(prediction, 1e-10, 1.0))
+        )
 
-    mistakes = tf.not_equal(tf.argmax(target, 1), tf.argmax(prediction, 1))
-    error = tf.reduce_mean(tf.cast(mistakes, tf.float32))
+    with tf.name_scope('train'):
+        minimize = tf.train.AdamOptimizer().minimize(cross_entropy)
+
+    with tf.name_scope('accuracy'):
+        mistakes = tf.not_equal(tf.argmax(target, 1), tf.argmax(prediction, 1))
+        error = tf.reduce_mean(tf.cast(mistakes, tf.float32))
+
+    # create a summary for our cost and accuracy
+    tf.summary.scalar("cost", cross_entropy)
+    tf.summary.scalar("error", error)
+
+    # merge all summaries into a single "operation" which we can execute in a
+    # session
+    summary_op = tf.summary.merge_all()
 
     model = {
         'minimize': minimize,
         'data': data,
         'target': target,
         'error': error,
+        'prediction': prediction,
     }
     return model
 
@@ -163,13 +185,13 @@ def train_and_test(model, batch_size, epochs, log_dir,
     writer = tf.summary.FileWriter(log_dir, sess.graph)
     sess.run(init_op)
 
-    no_of_batches = int(len(train_input) / batch_size)
+    batch_count = int(len(train_input) / batch_size)
     print("Training set:", len(train_input))
     print("Testing set:", len(test_input))
     for i in range(epochs):
         try:
             ptr = 0
-            for j in range(no_of_batches):
+            for j in range(batch_count):
                 inp, out = (
                     train_input[ptr:ptr + batch_size],
                     train_output[ptr:ptr + batch_size]
@@ -181,6 +203,7 @@ def train_and_test(model, batch_size, epochs, log_dir,
                         model['data']: inp, model['target']: out
                     }
                 )
+                # writer.add_summary(summary, i * batch_count + j)
             print("Epoch - ", str(i), datetime.now())
         except KeyboardInterrupt:
             print("Jumping out of training.")
