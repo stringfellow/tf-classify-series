@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Classify BMS time series that should be dependant on Time, OAT & Schedule.
+"""Classify BMS (Building Management System) time series that should be
+dependant on Time, OAT (Outside Air Temp) & Schedule.
 
 In theory, given the time of day, OAT and a schedule, some property of the
 other TS should respond to this. In the training sets, my assumption is that
